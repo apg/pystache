@@ -44,10 +44,20 @@ changes, so only update the pieces that do before you render. If you stored
 this in memory using an LRU cache, you could probably save a bunch calls to
 memcache and the database, but I haven't shown that yet.
 
-So, far the benchmark above runs quite a bit faster than pystache alone, so
-I think I'm on to something, but don't necessarily know what that "something" 
-is yet. It's also preliminarily faster than Jinja and Jinja2 doing the same
-thing. 
+So, far the benchmark above runs quite a bit faster than the equivalent
+pystache 
+
+::
+
+    context = {}
+    template = pystache.Template(TEMPLATE)
+    for thing in CHANGESET:
+        template.context.update(thing)
+        template.render(
+
+alone, so I think I'm on to something, but don't necessarily know
+what that "something" is yet. It's also preliminarily faster than Jinja and
+Jinja2 doing the same thing. 
 
 More info here in the future....
 
