@@ -16,10 +16,8 @@ def modifier(symbol):
         return func
     return set_modifier
 
-class Template(object):
-    # The regular expression used to find a #section
-    section_re = None
 
+class Template(object):
     # The regular expression used to find a tag.
     tag_re = None
 
@@ -32,106 +30,157 @@ class Template(object):
     def __init__(self, template, context=None):
         self.template = template
         self.context = context or {}
+
+        self._closure_map = {}
+        self._closures = []
+
         self.compile_regexps()
+        self.compile(template)
+        self.update(**self.context)
 
-    def render(self, template=None, context=None, encoding=None):
-        """Turns a Mustache template into something wonderful."""
-        template = template or self.template
-        context = context or self.context
+    def update(self, **context):
+        for var, val in context.items():
+            updater = self._closure_map.get(var, None)
+            if updater:
+                updater(**{var: val})
 
-        template = self.render_sections(template, context)
-        result = self.render_tags(template, context)
-        if encoding is not None:
-            result = result.encode(encoding)
-        return result
+    def render(self, fileobj=None, encoding=None):
+        if fileobj:
+            for c in self._closures:
+                tmp = c()
+                if encoding:
+                    tmp = tmp.encode(encoding)
+                fileobj.write(tmp)
+        else:
+            tmp = ''.join([c() for c in self._closures])
+            if encoding:
+                tmp = tmp.encode(encoding)
+            return tmp
 
     def compile_regexps(self):
         """Compiles our section and tag regular expressions."""
         tags = { 'otag': re.escape(self.otag), 'ctag': re.escape(self.ctag) }
 
-        section = r"%(otag)s[\#|^]([^\}]*)%(ctag)s\s*(.+?)\s*%(otag)s/\1%(ctag)s"
-        self.section_re = re.compile(section % tags, re.M|re.S)
+        # section = r"%(otag)s[\#|^]([^\}]*)%(ctag)s\s*(.+?)\s*%(otag)s/\1%(ctag)s"
+        # self.section_re = re.compile(section % tags, re.M|re.S)
 
         tag = r"%(otag)s(#|=|&|!|>|\{)?(.+?)\1?%(ctag)s+"
         self.tag_re = re.compile(tag % tags)
 
-    def render_sections(self, template, context):
-        """Expands sections."""
-        while 1:
-            match = self.section_re.search(template)
-            if match is None:
-                break
+    # def render_sections(self, template, context):
+    #     """Expands sections."""
+    #     while 1:
+    #         match = self.section_re.search(template)
+    #         if match is None:
+    #             break
 
-            section, section_name, inner = match.group(0, 1, 2)
-            section_name = section_name.strip()
+    #         section, section_name, inner = match.group(0, 1, 2)
+    #         section_name = section_name.strip()
 
-            it = context.get(section_name, None)
-            replacer = ''
-            if it and hasattr(it, '__call__'):
-                replacer = it(inner)
-            elif it and not hasattr(it, '__iter__'):
-                if section[2] != '^':
-                    replacer = inner
-            elif it:
-                insides = []
-                for item in it:
-                    insides.append(self.render(inner, item))
-                replacer = ''.join(insides)
-            elif not it and section[2] == '^':
-                replacer = inner
+    #         it = context.get(section_name, None)
+    #         replacer = ''
+    #         if it and hasattr(it, '__call__'):
+    #             replacer = it(inner)
+    #         elif it and not hasattr(it, '__iter__'):
+    #             if section[2] != '^':
+    #                 replacer = inner
+    #         elif it:
+    #             insides = []
+    #             for item in it:
+    #                 insides.append(self.render(inner, item))
+    #             replacer = ''.join(insides)
+    #         elif not it and section[2] == '^':
+    #             replacer = inner
+    #         print "replacing:", section, "\n\nwith: ", replacer
+    #         template = template.replace(section, replacer)
 
-            template = template.replace(section, replacer)
+    #     return template
 
-        return template
+    def compile(self, template):
+        """Compiles all the tags and text into a list of closures
+        """
+        tmp_len = len(template)
+        pos = 0
 
-    def render_tags(self, template, context):
-        """Renders all the tags in a template for a context."""
-        while 1:
-            match = self.tag_re.search(template)
-            if match is None:
-                break
+        for match in self.tag_re.finditer(template):
+            start = match.start()
+            end = match.end()
+            # have we skipped any text? If so create a text closure
+            if pos < start:
+                func = modifiers['TEXT'](self, template[pos:start])
+                self._closures.append(func)
 
             tag, tag_type, tag_name = match.group(0, 1, 2)
             tag_name = tag_name.strip()
-            func = modifiers[tag_type]
-            replacement = func(self, tag_name, context)
-            template = template.replace(tag, replacement)
 
-        return template
+            func = modifiers[tag_type](self, tag_name)
+            if func:
+                self._closures.append(func)
+                self._closure_map[tag_name] = func
+            pos = end
 
+        else:
+            if pos < tmp_len:
+                self._closures.append(modifiers['TEXT'](template[pos:]))
+ 
     @modifier(None)
-    def render_tag(self, tag_name, context):
+    def compile_tag(self, tag_name):
         """Given a tag name and context, finds, escapes, and renders the tag."""
-        raw = context.get(tag_name, '')
-        if not raw and raw is not 0:
-            return ''
-        return cgi.escape(unicode(raw))
+        rendered_text = ['']
+        def _inner(**context):
+            if len(context):
+                self.context.update(context)
+                raw = context.get(tag_name, '')
+                if not raw and raw is not None:
+                    rendered_text[0] = ''
+                else:
+                    rendered_text[0] = cgi.escape(unicode(raw))
+                return None
+            else:
+                return rendered_text[0]
+        return _inner
 
     @modifier('!')
-    def render_comment(self, tag_name=None, context=None):
+    def compile_comment(self, tag_name=None, context=None):
         """Rendering a comment always returns nothing."""
-        return ''
+        return None
 
     @modifier('{')
     @modifier('&')
-    def render_unescaped(self, tag_name=None, context=None):
+    def compile_unescaped(self, tag_name=None):
         """Render a tag without escaping it."""
-        return unicode(context.get(tag_name, ''))
+        rendered_text = ['']
+        def _inner(**context):
+            if len(context):
+                self.context.update(context)
+                rendered_text[0] = unicode(context.get(tag_name, ''))
+                return None
+            else:
+                return rendered_text[0]
+        return _inner
 
-    @modifier('>')
-    def render_partial(self, tag_name=None, context=None):
-        """Renders a partial within the current context."""
-        # Import view here to avoid import loop
-        from pystache.view import View
+    @modifier('TEXT')
+    def compile_text(self, text=''):
+        def _inner(**context):
+            if len(context):
+                return None
+            return text
+        return _inner
 
-        view = View(context=context)
-        view.template_name = tag_name
+    # @modifier('>')
+    # def render_partial(self, tag_name=None, context=None):
+    #     """Renders a partial within the current context."""
+    #     # Import view here to avoid import loop
+    #     from pystache.view import View
 
-        return view.render()
+    #     view = View(context=context)
+    #     view.template_name = tag_name
 
-    @modifier('=')
-    def render_delimiter(self, tag_name=None, context=None):
-        """Changes the Mustache delimiter."""
-        self.otag, self.ctag = tag_name.split(' ')
-        self.compile_regexps()
-        return ''
+    #     return view.render()
+
+    # @modifier('=')
+    # def render_delimiter(self, tag_name=None, context=None):
+    #     """Changes the Mustache delimiter."""
+    #     self.otag, self.ctag = tag_name.split(' ')
+    #     self.compile_regexps()
+    #     return ''
